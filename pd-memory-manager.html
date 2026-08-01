@@ -300,8 +300,7 @@ function normalizeMemory(raw) {
     footerMeta: lastFooter,
     footerCount: footers.length,
     createdAt: raw.created_at ?? null,
-    updatedAt: raw.updated_at ?? null,
-    status: raw.status ?? "active" // status not seen in real payloads yet; default active
+    updatedAt: raw.updated_at ?? null
   };
 }
 
@@ -332,43 +331,6 @@ function TypeBadge({
   }, m.icon), m.label, /*#__PURE__*/React.createElement(InfoIcon, {
     tip: m.tip
   }));
-}
-
-// ─── StatusPill ───────────────────────────────────────────────────────────────
-function StatusPill({
-  status
-}) {
-  const cfg = {
-    active: {
-      label: "Active",
-      bg: T.greenGlow,
-      color: T.green
-    },
-    redacted: {
-      label: "Redacted",
-      bg: T.redDim,
-      color: T.red
-    },
-    pending: {
-      label: "Pending",
-      bg: T.amberDim,
-      color: T.amber
-    }
-  }[status] ?? {
-    label: status,
-    bg: T.bgElevated,
-    color: T.textSecondary
-  };
-  return /*#__PURE__*/React.createElement("span", {
-    style: {
-      padding: "2px 8px",
-      borderRadius: 99,
-      background: cfg.bg,
-      color: cfg.color,
-      fontSize: 11,
-      fontWeight: 600
-    }
-  }, cfg.label);
 }
 
 // ─── Button ───────────────────────────────────────────────────────────────────
@@ -564,7 +526,11 @@ function makePD(apiKey) {
         content
       }
     }),
-    redactMemory: memoryId => request("POST", `/sre_agent/memories/${memoryId}/redact`)
+    // Permanent deletion. There is no redact endpoint — the published API
+    // exposes only DELETE, which returns 204 and removes the memory outright.
+    // A deleted memory simply stops appearing in list responses; there is no
+    // redacted state and no way to restore it.
+    deleteMemory: memoryId => request("DELETE", `/sre_agent/memories/${memoryId}`)
   };
 }
 
@@ -658,7 +624,7 @@ function ConnectScreen({
       fontSize: 13,
       marginTop: 6
     }
-  }, "Browse, edit, and redact what your SRE Agent has learned")), /*#__PURE__*/React.createElement("label", {
+  }, "Browse, edit, and delete what your SRE Agent has learned")), /*#__PURE__*/React.createElement("label", {
     style: {
       display: "block",
       color: T.textSecondary,
@@ -770,15 +736,15 @@ function MemoryDetail({
   memory,
   pd,
   onUpdate,
+  onDelete,
   onClose
 }) {
   const [editMode, setEditMode] = useState(false);
   const [editContent, setEditContent] = useState(memory.body ?? "");
   const [saving, setSaving] = useState(false);
-  const [confirmRedact, setConfirmRedact] = useState(false);
-  const [redacting, setRedacting] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const meta = metaFor(memory.type);
-  const isRedacted = memory.status === "redacted";
   async function saveEdit() {
     setSaving(true);
     try {
@@ -807,20 +773,18 @@ function MemoryDetail({
       setSaving(false);
     }
   }
-  async function confirmAndRedact() {
-    setRedacting(true);
+  async function confirmAndDelete() {
+    setDeleting(true);
     try {
-      await pd.redactMemory(memory.id);
-      onUpdate({
-        ...memory,
-        status: "redacted",
-        body: "[redacted]"
-      });
-      setConfirmRedact(false);
+      await pd.deleteMemory(memory.id);
+      // The memory is gone server-side, so drop it from the list rather than
+      // marking it — there is no state PagerDuty can report it back in.
+      onDelete(memory.id);
+      setConfirmDelete(false);
       onClose();
     } catch (e) {
-      alert("Redact failed: " + e.message);
-      setRedacting(false);
+      alert("Delete failed: " + e.message);
+      setDeleting(false);
     }
   }
   return /*#__PURE__*/React.createElement("div", {
@@ -906,8 +870,6 @@ function MemoryDetail({
     }
   }, /*#__PURE__*/React.createElement(TypeBadge, {
     type: memory.type
-  }), /*#__PURE__*/React.createElement(StatusPill, {
-    status: memory.status ?? "active"
   })), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
@@ -1017,7 +979,7 @@ function MemoryDetail({
     }
   }, "Content"), /*#__PURE__*/React.createElement(InfoIcon, {
     tip: "The actual knowledge stored in this memory, rendered from the agent's markdown."
-  })), !isRedacted && !editMode && /*#__PURE__*/React.createElement(Btn, {
+  })), !editMode && /*#__PURE__*/React.createElement(Btn, {
     small: true,
     variant: "ghost",
     onClick: () => {
@@ -1058,12 +1020,11 @@ function MemoryDetail({
       border: `1px solid ${T.border}`,
       borderRadius: 7,
       padding: "14px 16px",
-      color: isRedacted ? T.textDim : T.textPrimary,
-      fontStyle: isRedacted ? "italic" : "normal"
+      color: T.textPrimary
     }
-  }, isRedacted ? memory.body || "This memory has been redacted." : /*#__PURE__*/React.createElement(Markdown, {
+  }, /*#__PURE__*/React.createElement(Markdown, {
     text: memory.body
-  }))), !isRedacted && !editMode && /*#__PURE__*/React.createElement("div", {
+  }))), !editMode && /*#__PURE__*/React.createElement("div", {
     style: {
       marginTop: 28,
       padding: "14px 16px",
@@ -1081,8 +1042,8 @@ function MemoryDetail({
       alignItems: "center",
       gap: 6
     }
-  }, "⚠ Redact this memory", /*#__PURE__*/React.createElement(InfoIcon, {
-    tip: "Redacting removes this memory from the SRE Agent's knowledge base permanently. The agent will no longer use this information when investigating incidents. This cannot be undone."
+  }, "⚠ Delete this memory", /*#__PURE__*/React.createElement(InfoIcon, {
+    tip: "Deleting removes this memory from the SRE Agent's knowledge base permanently. The agent will no longer use this information when investigating incidents. This cannot be undone, and the memory cannot be restored."
   })), /*#__PURE__*/React.createElement("div", {
     style: {
       color: T.textSecondary,
@@ -1091,10 +1052,10 @@ function MemoryDetail({
     }
   }, "Permanently removes this entry from the agent's knowledge. The agent will stop using it for future incidents. This cannot be undone."), /*#__PURE__*/React.createElement(Btn, {
     danger: true,
-    onClick: () => setConfirmRedact(true)
-  }, "Redact memory")))), confirmRedact && /*#__PURE__*/React.createElement(Modal, {
-    title: "Confirm Redaction",
-    onClose: () => setConfirmRedact(false),
+    onClick: () => setConfirmDelete(true)
+  }, "Delete memory")))), confirmDelete && /*#__PURE__*/React.createElement(Modal, {
+    title: "Confirm Deletion",
+    onClose: () => setConfirmDelete(false),
     width: 420
   }, /*#__PURE__*/React.createElement("div", {
     style: {
@@ -1125,11 +1086,11 @@ function MemoryDetail({
     }
   }, /*#__PURE__*/React.createElement(Btn, {
     danger: true,
-    onClick: confirmAndRedact,
-    disabled: redacting
-  }, redacting ? "Redacting…" : "Yes, redact permanently"), /*#__PURE__*/React.createElement(Btn, {
+    onClick: confirmAndDelete,
+    disabled: deleting
+  }, deleting ? "Deleting…" : "Yes, delete permanently"), /*#__PURE__*/React.createElement(Btn, {
     variant: "ghost",
-    onClick: () => setConfirmRedact(false)
+    onClick: () => setConfirmDelete(false)
   }, "Cancel"))));
 }
 
@@ -1138,7 +1099,6 @@ function MemoryRow({
   memory,
   onClick
 }) {
-  const isRedacted = memory.status === "redacted";
   const [hovered, setHovered] = useState(false);
 
   // Strip markdown syntax roughly for the preview line so '#### Service Profile: X'
@@ -1150,29 +1110,27 @@ function MemoryRow({
     onMouseLeave: () => setHovered(false),
     style: {
       display: "grid",
-      gridTemplateColumns: "170px 1fr 120px 80px",
+      gridTemplateColumns: "170px 1fr 120px",
       alignItems: "center",
       gap: 12,
       padding: "12px 16px",
       borderBottom: `1px solid ${T.border}`,
       cursor: "pointer",
       background: hovered ? T.bgElevated : "transparent",
-      transition: "background 0.12s",
-      opacity: isRedacted ? 0.55 : 1
+      transition: "background 0.12s"
     }
   }, /*#__PURE__*/React.createElement(TypeBadge, {
     type: memory.type
   }), /*#__PURE__*/React.createElement("div", {
     style: {
-      color: isRedacted ? T.textDim : T.textPrimary,
+      color: T.textPrimary,
       fontSize: 13,
       lineHeight: 1.5,
       overflow: "hidden",
       textOverflow: "ellipsis",
       display: "-webkit-box",
       WebkitLineClamp: 2,
-      WebkitBoxOrient: "vertical",
-      fontStyle: isRedacted ? "italic" : "normal"
+      WebkitBoxOrient: "vertical"
     }
   }, previewText.slice(0, 220) || /*#__PURE__*/React.createElement("em", {
     style: {
@@ -1184,13 +1142,7 @@ function MemoryRow({
       fontSize: 11,
       textAlign: "right"
     }
-  }, relTime(memory.updatedAt ?? memory.createdAt)), /*#__PURE__*/React.createElement("div", {
-    style: {
-      textAlign: "right"
-    }
-  }, /*#__PURE__*/React.createElement(StatusPill, {
-    status: memory.status ?? "active"
-  })));
+  }, relTime(memory.updatedAt ?? memory.createdAt)));
 }
 
 // ─── SERVICE CARD ─────────────────────────────────────────────────────────────
@@ -1279,7 +1231,6 @@ function App() {
   const [memoriesLoading, setMemoriesLoading] = useState(false);
   const [memoryCounts, setMemoryCounts] = useState({});
   const [typeFilter, setTypeFilter] = useState("all");
-  const [statusFilter, setStatusFilter] = useState("active");
   const [memSearch, setMemSearch] = useState("");
   const [selectedMemory, setSelectedMemory] = useState(null);
   const [toast, setToast] = useState(null);
@@ -1318,9 +1269,7 @@ function App() {
   const computeCounts = mems => {
     const counts = {};
     mems.forEach(m => {
-      if ((m.status ?? "active") !== "redacted") {
-        counts[m.type] = (counts[m.type] ?? 0) + 1;
-      }
+      counts[m.type] = (counts[m.type] ?? 0) + 1;
     });
     return counts;
   };
@@ -1362,7 +1311,6 @@ function App() {
     setIncidentId("");
     setMemories([]);
     setTypeFilter("all");
-    setStatusFilter("active");
     setMemSearch("");
     setSelectedMemory(null);
     loadMemories(service);
@@ -1378,13 +1326,24 @@ function App() {
   function handleMemoryUpdate(updated) {
     setMemories(prev => prev.map(m => m.id === updated.id ? updated : m));
     setSelectedMemory(updated);
-    showToast(updated.status === "redacted" ? "Memory redacted" : "Memory updated");
+    showToast("Memory updated");
+  }
+  function handleMemoryDelete(deletedId) {
+    const remaining = memories.filter(m => m.id !== deletedId);
+    setMemories(remaining);
+    // Keep the sidebar's per-service counts honest after a deletion.
+    if (selectedService) {
+      setMemoryCounts(prev => ({
+        ...prev,
+        [selectedService.id]: computeCounts(remaining)
+      }));
+    }
+    setSelectedMemory(null);
+    showToast("Memory deleted");
   }
   const availableTypes = Array.from(new Set(memories.map(m => m.type)));
   const filtered = memories.filter(m => {
     if (typeFilter !== "all" && m.type !== typeFilter) return false;
-    if (statusFilter === "active" && m.status === "redacted") return false;
-    if (statusFilter === "redacted" && m.status !== "redacted") return false;
     if (memSearch) {
       const q = memSearch.toLowerCase();
       if (!(m.body ?? "").toLowerCase().includes(q)) return false;
@@ -1392,11 +1351,7 @@ function App() {
     return true;
   });
   const filteredServices = services.filter(s => s.name.toLowerCase().includes(serviceSearch.toLowerCase()));
-  const activeCounts = {};
-  memories.filter(m => m.status !== "redacted").forEach(m => {
-    activeCounts[m.type] = (activeCounts[m.type] ?? 0) + 1;
-  });
-  const redactedCount = memories.filter(m => m.status === "redacted").length;
+  const activeCounts = computeCounts(memories);
   if (!pd) {
     return /*#__PURE__*/React.createElement(ConnectScreen, {
       onConnect: handleConnect
@@ -1676,17 +1631,7 @@ function App() {
         border: `1px solid ${m.color}33`
       }
     }, count, " ", m.label);
-  }), redactedCount > 0 && /*#__PURE__*/React.createElement("span", {
-    style: {
-      padding: "3px 9px",
-      borderRadius: 99,
-      fontSize: 11,
-      fontWeight: 600,
-      background: T.redDim,
-      color: T.red,
-      border: `1px solid ${T.red}33`
-    }
-  }, redactedCount, " Redacted"))), /*#__PURE__*/React.createElement("div", {
+  }))), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       gap: 10,
@@ -1754,31 +1699,6 @@ function App() {
     }, m.label);
   })), /*#__PURE__*/React.createElement("div", {
     style: {
-      width: 1,
-      height: 20,
-      background: T.border
-    }
-  }), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      gap: 4
-    }
-  }, ["active", "redacted", "all"].map(s => /*#__PURE__*/React.createElement("button", {
-    key: s,
-    onClick: () => setStatusFilter(s),
-    style: {
-      padding: "4px 10px",
-      borderRadius: 6,
-      border: "none",
-      cursor: "pointer",
-      fontSize: 12,
-      fontWeight: 600,
-      background: statusFilter === s ? T.bgElevated : "transparent",
-      color: statusFilter === s ? T.textPrimary : T.textDim,
-      transition: "all 0.1s"
-    }
-  }, s === "all" ? "All statuses" : s.charAt(0).toUpperCase() + s.slice(1)))), /*#__PURE__*/React.createElement("div", {
-    style: {
       marginLeft: "auto",
       width: 220
     }
@@ -1800,14 +1720,14 @@ function App() {
   })))), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "grid",
-      gridTemplateColumns: "170px 1fr 120px 80px",
+      gridTemplateColumns: "170px 1fr 120px",
       gap: 12,
       padding: "8px 16px",
       background: T.bgInput,
       borderBottom: `1px solid ${T.border}`,
       flexShrink: 0
     }
-  }, [["Type", "The category of knowledge stored in this memory."], ["Content preview", "A preview of the memory's content. Click a row to read the full entry."], ["Last updated", "When this memory was last modified or created."], ["Status", "Active memories are used by the agent. Redacted memories have been permanently removed."]].map(([label, tip]) => /*#__PURE__*/React.createElement("div", {
+  }, [["Type", "The category of knowledge stored in this memory."], ["Content preview", "A preview of the memory's content. Click a row to read the full entry."], ["Last updated", "When this memory was last modified or created."]].map(([label, tip]) => /*#__PURE__*/React.createElement("div", {
     key: label,
     style: {
       display: "flex",
@@ -1856,6 +1776,7 @@ function App() {
     memory: selectedMemory,
     pd: pd,
     onUpdate: handleMemoryUpdate,
+    onDelete: handleMemoryDelete,
     onClose: () => setSelectedMemory(null)
   }), toast && /*#__PURE__*/React.createElement(Toast, {
     key: toast.key,

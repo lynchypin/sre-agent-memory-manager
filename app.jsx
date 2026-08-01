@@ -210,7 +210,6 @@ function normalizeMemory(raw) {
     footerCount: footers.length,
     createdAt: raw.created_at ?? null,
     updatedAt: raw.updated_at ?? null,
-    status: raw.status ?? "active", // status not seen in real payloads yet; default active
   };
 }
 
@@ -230,22 +229,6 @@ function TypeBadge({ type }) {
       {m.label}
       <InfoIcon tip={m.tip} />
     </span>
-  );
-}
-
-// ─── StatusPill ───────────────────────────────────────────────────────────────
-function StatusPill({ status }) {
-  const cfg = {
-    active:   { label: "Active",   bg: T.greenGlow,  color: T.green },
-    redacted: { label: "Redacted", bg: T.redDim,     color: T.red   },
-    pending:  { label: "Pending",  bg: T.amberDim,   color: T.amber },
-  }[status] ?? { label: status, bg: T.bgElevated, color: T.textSecondary };
-  return (
-    <span style={{
-      padding: "2px 8px", borderRadius: 99,
-      background: cfg.bg, color: cfg.color,
-      fontSize: 11, fontWeight: 600,
-    }}>{cfg.label}</span>
   );
 }
 
@@ -386,8 +369,12 @@ function makePD(apiKey) {
         memory: { content },
       }),
 
-    redactMemory: (memoryId) =>
-      request("POST", `/sre_agent/memories/${memoryId}/redact`),
+    // Permanent deletion. There is no redact endpoint — the published API
+    // exposes only DELETE, which returns 204 and removes the memory outright.
+    // A deleted memory simply stops appearing in list responses; there is no
+    // redacted state and no way to restore it.
+    deleteMemory: (memoryId) =>
+      request("DELETE", `/sre_agent/memories/${memoryId}`),
   };
 }
 
@@ -453,7 +440,7 @@ function ConnectScreen({ onConnect }) {
             SRE Agent Memory Manager
           </div>
           <div style={{ color: T.textSecondary, fontSize: 13, marginTop: 6 }}>
-            Browse, edit, and redact what your SRE Agent has learned
+            Browse, edit, and delete what your SRE Agent has learned
           </div>
         </div>
 
@@ -523,15 +510,14 @@ function Field({ label, tip, children }) {
 }
 
 // ─── MEMORY DETAIL PANEL ──────────────────────────────────────────────────────
-function MemoryDetail({ memory, pd, onUpdate, onClose }) {
+function MemoryDetail({ memory, pd, onUpdate, onDelete, onClose }) {
   const [editMode, setEditMode] = useState(false);
   const [editContent, setEditContent] = useState(memory.body ?? "");
   const [saving, setSaving] = useState(false);
-  const [confirmRedact, setConfirmRedact] = useState(false);
-  const [redacting, setRedacting] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const meta = metaFor(memory.type);
-  const isRedacted = memory.status === "redacted";
 
   async function saveEdit() {
     setSaving(true);
@@ -557,16 +543,18 @@ function MemoryDetail({ memory, pd, onUpdate, onClose }) {
     }
   }
 
-  async function confirmAndRedact() {
-    setRedacting(true);
+  async function confirmAndDelete() {
+    setDeleting(true);
     try {
-      await pd.redactMemory(memory.id);
-      onUpdate({ ...memory, status: "redacted", body: "[redacted]" });
-      setConfirmRedact(false);
+      await pd.deleteMemory(memory.id);
+      // The memory is gone server-side, so drop it from the list rather than
+      // marking it — there is no state PagerDuty can report it back in.
+      onDelete(memory.id);
+      setConfirmDelete(false);
       onClose();
     } catch (e) {
-      alert("Redact failed: " + e.message);
-      setRedacting(false);
+      alert("Delete failed: " + e.message);
+      setDeleting(false);
     }
   }
 
@@ -606,7 +594,6 @@ function MemoryDetail({ memory, pd, onUpdate, onClose }) {
         <div style={{ padding: 20, flex: 1 }}>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 20 }}>
             <TypeBadge type={memory.type} />
-            <StatusPill status={memory.status ?? "active"} />
           </div>
 
           <div style={{ display: "flex", flexDirection: "column", gap: 14, marginBottom: 20 }}>
@@ -676,7 +663,7 @@ function MemoryDetail({ memory, pd, onUpdate, onClose }) {
                 </span>
                 <InfoIcon tip="The actual knowledge stored in this memory, rendered from the agent's markdown." />
               </div>
-              {!isRedacted && !editMode && (
+              {!editMode && (
                 <Btn small variant="ghost" onClick={() => { setEditContent(memory.body ?? ""); setEditMode(true); }}>
                   Edit
                 </Btn>
@@ -709,39 +696,36 @@ function MemoryDetail({ memory, pd, onUpdate, onClose }) {
               <div style={{
                 background: T.bgInput, border: `1px solid ${T.border}`,
                 borderRadius: 7, padding: "14px 16px",
-                color: isRedacted ? T.textDim : T.textPrimary,
-                fontStyle: isRedacted ? "italic" : "normal",
+                color: T.textPrimary,
               }}>
-                {isRedacted ? (memory.body || "This memory has been redacted.") : (
-                  <Markdown text={memory.body} />
-                )}
+                <Markdown text={memory.body} />
               </div>
             )}
           </div>
 
-          {!isRedacted && !editMode && (
+          {!editMode && (
             <div style={{
               marginTop: 28, padding: "14px 16px",
               border: `1px solid ${T.red}33`, borderRadius: 8,
               background: T.redDim,
             }}>
               <div style={{ color: T.red, fontWeight: 700, fontSize: 13, marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
-                ⚠ Redact this memory
-                <InfoIcon tip="Redacting removes this memory from the SRE Agent's knowledge base permanently. The agent will no longer use this information when investigating incidents. This cannot be undone." />
+                ⚠ Delete this memory
+                <InfoIcon tip="Deleting removes this memory from the SRE Agent's knowledge base permanently. The agent will no longer use this information when investigating incidents. This cannot be undone, and the memory cannot be restored." />
               </div>
               <div style={{ color: T.textSecondary, fontSize: 12, marginBottom: 12 }}>
                 Permanently removes this entry from the agent's knowledge. The agent will stop using it for future incidents. This cannot be undone.
               </div>
-              <Btn danger onClick={() => setConfirmRedact(true)}>
-                Redact memory
+              <Btn danger onClick={() => setConfirmDelete(true)}>
+                Delete memory
               </Btn>
             </div>
           )}
         </div>
       </div>
 
-      {confirmRedact && (
-        <Modal title="Confirm Redaction" onClose={() => setConfirmRedact(false)} width={420}>
+      {confirmDelete && (
+        <Modal title="Confirm Deletion" onClose={() => setConfirmDelete(false)} width={420}>
           <div style={{ color: T.textSecondary, fontSize: 13, lineHeight: 1.7, marginBottom: 20 }}>
             You are about to permanently remove this memory from the SRE Agent's knowledge base.
             <br /><br />
@@ -755,10 +739,10 @@ function MemoryDetail({ memory, pd, onUpdate, onClose }) {
             "{(memory.body ?? "").slice(0, 140)}{(memory.body ?? "").length > 140 ? "…" : ""}"
           </div>
           <div style={{ display: "flex", gap: 8 }}>
-            <Btn danger onClick={confirmAndRedact} disabled={redacting}>
-              {redacting ? "Redacting…" : "Yes, redact permanently"}
+            <Btn danger onClick={confirmAndDelete} disabled={deleting}>
+              {deleting ? "Deleting…" : "Yes, delete permanently"}
             </Btn>
-            <Btn variant="ghost" onClick={() => setConfirmRedact(false)}>
+            <Btn variant="ghost" onClick={() => setConfirmDelete(false)}>
               Cancel
             </Btn>
           </div>
@@ -770,7 +754,6 @@ function MemoryDetail({ memory, pd, onUpdate, onClose }) {
 
 // ─── MEMORY ROW ───────────────────────────────────────────────────────────────
 function MemoryRow({ memory, onClick }) {
-  const isRedacted = memory.status === "redacted";
   const [hovered, setHovered] = useState(false);
 
   // Strip markdown syntax roughly for the preview line so '#### Service Profile: X'
@@ -788,7 +771,7 @@ function MemoryRow({ memory, onClick }) {
       onMouseLeave={() => setHovered(false)}
       style={{
         display: "grid",
-        gridTemplateColumns: "170px 1fr 120px 80px",
+        gridTemplateColumns: "170px 1fr 120px",
         alignItems: "center",
         gap: 12,
         padding: "12px 16px",
@@ -796,28 +779,22 @@ function MemoryRow({ memory, onClick }) {
         cursor: "pointer",
         background: hovered ? T.bgElevated : "transparent",
         transition: "background 0.12s",
-        opacity: isRedacted ? 0.55 : 1,
       }}
     >
       <TypeBadge type={memory.type} />
 
       <div style={{
-        color: isRedacted ? T.textDim : T.textPrimary,
+        color: T.textPrimary,
         fontSize: 13, lineHeight: 1.5,
         overflow: "hidden", textOverflow: "ellipsis",
         display: "-webkit-box", WebkitLineClamp: 2,
         WebkitBoxOrient: "vertical",
-        fontStyle: isRedacted ? "italic" : "normal",
       }}>
         {previewText.slice(0, 220) || <em style={{ color: T.textDim }}>No content</em>}
       </div>
 
       <div style={{ color: T.textDim, fontSize: 11, textAlign: "right" }}>
         {relTime(memory.updatedAt ?? memory.createdAt)}
-      </div>
-
-      <div style={{ textAlign: "right" }}>
-        <StatusPill status={memory.status ?? "active"} />
       </div>
     </div>
   );
@@ -893,7 +870,6 @@ function App() {
   const [memoryCounts, setMemoryCounts] = useState({});
 
   const [typeFilter, setTypeFilter] = useState("all");
-  const [statusFilter, setStatusFilter] = useState("active");
   const [memSearch, setMemSearch] = useState("");
 
   const [selectedMemory, setSelectedMemory] = useState(null);
@@ -935,9 +911,7 @@ function App() {
   const computeCounts = (mems) => {
     const counts = {};
     mems.forEach(m => {
-      if ((m.status ?? "active") !== "redacted") {
-        counts[m.type] = (counts[m.type] ?? 0) + 1;
-      }
+      counts[m.type] = (counts[m.type] ?? 0) + 1;
     });
     return counts;
   };
@@ -979,7 +953,6 @@ function App() {
     setIncidentId("");
     setMemories([]);
     setTypeFilter("all");
-    setStatusFilter("active");
     setMemSearch("");
     setSelectedMemory(null);
     loadMemories(service);
@@ -997,15 +970,24 @@ function App() {
   function handleMemoryUpdate(updated) {
     setMemories(prev => prev.map(m => m.id === updated.id ? updated : m));
     setSelectedMemory(updated);
-    showToast(updated.status === "redacted" ? "Memory redacted" : "Memory updated");
+    showToast("Memory updated");
+  }
+
+  function handleMemoryDelete(deletedId) {
+    const remaining = memories.filter(m => m.id !== deletedId);
+    setMemories(remaining);
+    // Keep the sidebar's per-service counts honest after a deletion.
+    if (selectedService) {
+      setMemoryCounts(prev => ({ ...prev, [selectedService.id]: computeCounts(remaining) }));
+    }
+    setSelectedMemory(null);
+    showToast("Memory deleted");
   }
 
   const availableTypes = Array.from(new Set(memories.map(m => m.type)));
 
   const filtered = memories.filter(m => {
     if (typeFilter !== "all" && m.type !== typeFilter) return false;
-    if (statusFilter === "active" && m.status === "redacted") return false;
-    if (statusFilter === "redacted" && m.status !== "redacted") return false;
     if (memSearch) {
       const q = memSearch.toLowerCase();
       if (!(m.body ?? "").toLowerCase().includes(q)) return false;
@@ -1017,11 +999,7 @@ function App() {
     s.name.toLowerCase().includes(serviceSearch.toLowerCase())
   );
 
-  const activeCounts = {};
-  memories.filter(m => m.status !== "redacted").forEach(m => {
-    activeCounts[m.type] = (activeCounts[m.type] ?? 0) + 1;
-  });
-  const redactedCount = memories.filter(m => m.status === "redacted").length;
+  const activeCounts = computeCounts(memories);
 
   if (!pd) {
     return <ConnectScreen onConnect={handleConnect} />;
@@ -1178,14 +1156,6 @@ function App() {
                           </span>
                         );
                       })}
-                      {redactedCount > 0 && (
-                        <span style={{
-                          padding: "3px 9px", borderRadius: 99, fontSize: 11, fontWeight: 600,
-                          background: T.redDim, color: T.red, border: `1px solid ${T.red}33`,
-                        }}>
-                          {redactedCount} Redacted
-                        </span>
-                      )}
                     </div>
                   )}
                 </div>
@@ -1251,26 +1221,6 @@ function App() {
                       })}
                   </div>
 
-                  <div style={{ width: 1, height: 20, background: T.border }} />
-
-                  <div style={{ display: "flex", gap: 4 }}>
-                    {["active", "redacted", "all"].map(s => (
-                      <button
-                        key={s}
-                        onClick={() => setStatusFilter(s)}
-                        style={{
-                          padding: "4px 10px", borderRadius: 6, border: "none", cursor: "pointer",
-                          fontSize: 12, fontWeight: 600,
-                          background: statusFilter === s ? T.bgElevated : "transparent",
-                          color: statusFilter === s ? T.textPrimary : T.textDim,
-                          transition: "all 0.1s",
-                        }}
-                      >
-                        {s === "all" ? "All statuses" : s.charAt(0).toUpperCase() + s.slice(1)}
-                      </button>
-                    ))}
-                  </div>
-
                   <div style={{ marginLeft: "auto", width: 220 }}>
                     <input
                       value={memSearch}
@@ -1288,7 +1238,7 @@ function App() {
 
               <div style={{
                 display: "grid",
-                gridTemplateColumns: "170px 1fr 120px 80px",
+                gridTemplateColumns: "170px 1fr 120px",
                 gap: 12, padding: "8px 16px",
                 background: T.bgInput,
                 borderBottom: `1px solid ${T.border}`,
@@ -1298,7 +1248,6 @@ function App() {
                   ["Type", "The category of knowledge stored in this memory."],
                   ["Content preview", "A preview of the memory's content. Click a row to read the full entry."],
                   ["Last updated", "When this memory was last modified or created."],
-                  ["Status", "Active memories are used by the agent. Redacted memories have been permanently removed."],
                 ].map(([label, tip]) => (
                   <div key={label} style={{ display: "flex", alignItems: "center" }}>
                     <span style={{ color: T.textDim, fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>
@@ -1340,6 +1289,7 @@ function App() {
           memory={selectedMemory}
           pd={pd}
           onUpdate={handleMemoryUpdate}
+          onDelete={handleMemoryDelete}
           onClose={() => setSelectedMemory(null)}
         />
       )}
