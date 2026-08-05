@@ -76,6 +76,7 @@ If you want to modify the source, the original JSX (before compilation) is inclu
 
 - **Results are capped at 100 memories per query, and there is no way to page past that.** Confirmed against the live API: `limit` is rejected above 100 (HTTP 400), the `offset` parameter is silently ignored, and the response contains no cursor, `more`, or `total` field. If a service has more than 100 memories, the rest are simply unreachable through the API. If you see exactly 100 results, assume there may be more.
 - PagerDuty's published OpenAPI spec lists the playbook memory type as `incident_playbook`, but the live API actually returns `playbook`. This tool uses `playbook`, which is what works. If PagerDuty ever aligns the API to its own spec, playbook memories will start appearing under a generic fallback tab — that's the signal this needs updating.
+- **The memories endpoint rate-limits aggressively** — noticeably tighter than PagerDuty's general REST limit, and tight enough that clicking through several services in quick succession can trip it. The tool handles this for you: it respects the `Retry-After` header, otherwise backs off (1s, 2s, 4s), retries up to three times, and shows a "Rate limited — retrying" notice while it waits. If all retries are exhausted it tells you to wait about a minute. Nothing is lost when this happens; just retry.
 
 ## API compatibility
 
